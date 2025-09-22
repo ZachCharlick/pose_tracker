@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'publisher = blender_pub_test.publisher:main',
+            'image_publisher = blender_pub_test.image_publisher:main',
         ],
     },
 )
