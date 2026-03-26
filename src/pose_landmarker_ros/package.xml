@@ -10,7 +10,9 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
   <depend>pose_landmarker_interfaces</depend>
 
   <!-- MediaPipe: pip install mediapipe (same interpreter as ros2 run). -->

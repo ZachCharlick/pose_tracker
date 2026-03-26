@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pose_landmarker_node = pose_landmarker_ros.pose_landmarker_node:main',
+            'forearm_pose_3d_node = pose_landmarker_ros.forearm_pose_3d_node:main',
         ],
     },
 )

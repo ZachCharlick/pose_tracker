@@ -17,37 +17,20 @@ ros2 launch realsense2_camera rs_launch.py \
 
 RGB image is at /camera/camera/color/image_raw
 
-## MediaPipe pose (pose_landmarker_ros)
+To get the landmarks and visualize
 
-Install MediaPipe for the **same interpreter** `ros2 run` uses (on Humble this is usually `/usr/bin/python3`, not Conda):
-
-```bash
-/usr/bin/python3 -m pip install --user mediapipe
-```
-
-If `pip` pulls **NumPy 2.x** and you see `ImportError: numpy.core.multiarray failed to import` (or matplotlib errors when importing MediaPipe), pin NumPy for compatibility with Ubuntu’s system `matplotlib`:
-
-```bash
-/usr/bin/python3 -m pip install --user 'numpy>=1.26.4,<2'
-```
-
-Download a pose landmarker `.task` model (e.g. `pose_landmarker_heavy.task`) and pass its absolute path as `model_path`.
-
-Build (if Conda’s `python3` breaks `rosidl_adapter`, put `/usr/bin` first in `PATH` or use your known-good build setup):
-
-```bash
-colcon build --packages-select pose_landmarker_interfaces pose_landmarker_ros
-source install/setup.bash
-```
-
-Run with RealSense RGB (optional annotated image for RViz **Image** display):
-
-```bash
 ros2 run pose_landmarker_ros pose_landmarker_node \
   --ros-args \
   -p image_topic:=/camera/camera/color/image_raw \
-  -p model_path:=/real/path/to/pose_landmarker_heavy.task \
-  -p publish_annotated_image:=true
-```
+  -p model_path:=/home/zacharycharlick/Downloads/google-pose-api-main/pose_landmarker_heavy.task \
+  -p publish_annotated_image:=true \
+  -p landmarks_topic:=pose_landmarks
 
-Topics: `pose_landmarks` (`pose_landmarker_interfaces/PoseLandmarksStamped`, normalized x/y in image plane), `pose_image_annotated` when enabled.
+To get forearm pose
+
+ros2 run pose_landmarker_ros forearm_pose_3d_node \
+  --ros-args \
+  -p landmarks_topic:=pose_landmarks \
+  -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+  -p camera_info_topic:=/camera/camera/color/camera_info \
+  -p output_pose_topic:=forearm_pose_camera
