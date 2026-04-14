@@ -71,3 +71,8 @@ pose_filter:
     # 3x1 Gravity Vector
     # Adjust sign/axis depending on your specific IMU frame convention.
     gravity_vector: [-0.3, -0.116, -10.222]
+
+    # IMU acceleration convention:
+    # true  -> accelerometer includes gravity (specific force), use a_world = R*a + g
+    # false -> accelerometer is already gravity-compensated, use a_world = R*a
+    imu_accel_includes_gravity: true
