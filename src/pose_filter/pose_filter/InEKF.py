@@ -2,7 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from sensor_msgs.msg import Imu
-from geometry_msgs.msg import Pose, PoseStamped
+from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
 import numpy as np
 from scipy.linalg import expm, logm, block_diag
 from scipy.spatial.transform import Rotation as R
@@ -40,7 +40,7 @@ class InEKF(Node):
         self.poseSub = self.create_subscription(PoseStamped, "forearm_pose_camera", self.correction, 1)
         
         # Set up publishers
-        self.posePub = self.create_publisher(PoseStamped, "handPose", 1)
+        self.posePub = self.create_publisher(PoseWithCovarianceStamped, "handPose", 1)
 
         self.timer = self.create_timer(0.2, self.pubPose)
 
@@ -304,169 +304,115 @@ class InEKF(Node):
         print(state_str)
 
     
-    # # Correction step (callback on pose from pose tracker)
-    # def correction(self, msg):
-    
-    #     print("This is the correction step. Received pose measurement from camera, updating state estimate...")
-
-    #     # Convert the pose to homogeneous form
-    #     # Previous lift (kept for reference):
-    #     # Y = self.poseToHomogeneous(msg)
-
-    #     # Camera gives pose only, so carry predicted velocity into the lifted measurement
-    #     # to avoid injecting an unintended zero-velocity pseudo-measurement.
-    #     Y = self.poseToHomogeneous(msg, velocity=self.X[0:3, 3].flatten())
-
-    #     # Calculate Kalman gain, innovation
-    #     S = self.H @ self.P @ self.H.T + self.N
-        
-    #     # COPILOT SUGGESTED Enforce symmetry and add a tiny diagonal jitter for numerical stability.
-    #     S = 0.5 * (S + S.T)
-    #     S_reg = S + 1e-9 * np.eye(S.shape[0])
-
-    #     PHt = self.P @ self.H.T
-    #     # Previous gain (kept for reference):
-    #     # L = self.P @ self.H.T @ np.linalg.inv(S)
-    #     try:
-    #         # Solve L * S_reg = P * H^T without forming S^{-1} explicitly.
-    #         L = np.linalg.solve(S_reg.T, PHt.T).T
-    #     except np.linalg.LinAlgError:
-    #         self.get_logger().warn("Innovation covariance is singular; using pseudo-inverse for Kalman gain.")
-    #         L = PHt @ np.linalg.pinv(S_reg)
-
-    #     v = self.vee(logm(self.X @ np.linalg.inv(Y))).reshape((9,1))
-        
-    #     # Correct state
-    #     # Previous correction update (kept for reference):
-    #     # self.X = self.X @ expm(self.wedge((L @ v).flatten()))
-
-    #     # Use negative feedback with residual r = Log(X Y^{-1}) in a right-multiplicative update.
-    #     self.X = self.X @ expm(self.wedge((-L @ v).flatten()))
-        
-    #     # Correct covariance
-    #     I = np.eye(9)
-    #     self.P = (I - (L @ self.H)) @ self.P @ (I - (L @ self.H)).T + L @ self.N @ L.T
-
-    #     #DEBUG
-    #     self.X[0:3, 3] = [0, 0, 0]
-    #     self.X[0:3, 4] = [0, 0, 0]
-
-    #     # Extract blocks
-    #     rot_matrix = self.X[0:3, 0:3]
-    #     vel = self.X[0:3, 3].flatten()
-    #     pos = self.X[0:3, 4].flatten()
-
-    #     # Convert rotation to Euler angles (Roll, Pitch, Yaw) in degrees
-    #     rpy = R.from_matrix(rot_matrix).as_euler('xyz', degrees=True)
-
-    #     # Format string to 3 decimal places
-    #     state_str = (
-    #         f"\n--- InEKF Correction State ---\n"            
-    #         f"Position (x,y,z) [m]   : [{pos[0]: 8.3f}, {pos[1]: 8.3f}, {pos[2]: 8.3f}]\n"
-    #         f"Velocity (x,y,z) [m/s] : [{vel[0]: 8.3f}, {vel[1]: 8.3f}, {vel[2]: 8.3f}]\n"
-    #         f"Rotation (r,p,y) [deg] : [{rpy[0]: 8.3f}, {rpy[1]: 8.3f}, {rpy[2]: 8.3f}]\n"
-    #         # f"RESIDUAL Linear Accel: [{accel[0]: 8.3f}, {accel[1]: 8.3f}, {accel[2]: 8.3f}]\n"
-    #         f"------------------------------"
-    #     )
-
-    #     # Print to terminal
-    #     print(state_str)
-
+    # Correction step (callback on pose from pose tracker)
     def correction(self, msg):
-        # 1. Lift Pose to SE(3) - We don't need SE2(3) for the measurement itself
-        # because we are only observing 6 degrees of freedom (Rot + Pos)
+    
+        # Set it to work for both Pose and PoseStamped
         pose_msg = msg.pose if hasattr(msg, "pose") else msg
+
+        # Grab the measured orientation/position as a rotation matrix/vector
         R_meas = R.from_quat([
             pose_msg.orientation.x, pose_msg.orientation.y, 
             pose_msg.orientation.z, pose_msg.orientation.w
         ]).as_matrix()
         p_meas = np.array([pose_msg.position.x, pose_msg.position.y, pose_msg.position.z])
 
-        # 2. Calculate Innovation (Left-Invariant style)
-        # Innovation in rotation: Log(R_est^T * R_meas)
-        R_est = self.X[0:3, 0:3]
-        p_est = self.X[0:3, 4]
-        
-        delta_R_mat = R_est.T @ R_meas
-        # scipy.spatial.transform.Rotation can handle the log map via as_rotvec()
-        z_phi = R.from_matrix(delta_R_mat).as_rotvec()
-        
-        # Innovation in position: R_est^T * (p_meas - p_est)
-        # We rotate into the body frame to match the Left-Invariant error definition
-        z_p = R_est.T @ (p_meas - p_est)
-        
-        # Combined Innovation Vector (6x1)
-        z = np.hstack([z_phi, z_p])
+        # Calculate the innovation
+        R_state = self.X[0:3, 0:3]
+        p_state = self.X[0:3, 4]
+        delta_R = R_state.T @ R_meas # change in orientation from state to measurement on group
+        v_phi = R.from_matrix(delta_R).as_rotvec() # Log map of rotation error gives us the innovation in the Lie algebra (3x1)
+        v_p = R_state.T @ (p_meas - p_state) # Position innovation
+        v = np.hstack([v_phi, v_p]) # Combined innovation vector
 
-        # 3. Define the 6x9 Observation Matrix H
-        # State error order: [rotation, velocity, position]
-        # We only observe rotation (0:3) and position (6:9)
+        # Jacobian (6x9 to remove observation of velocity)
         H_pose = np.zeros((6, 9))
         H_pose[0:3, 0:3] = np.eye(3) # Orientation error
         H_pose[3:6, 6:9] = np.eye(3) # Position error
 
-        # 4. Kalman Gain Logic
-        # self.N should be a 6x6 matrix (noise for roll, pitch, yaw, x, y, z)
-        # If your self.N is 9x9, slice it: N_6x6 = self.N[[0,1,2,6,7,8], :][:, [0,1,2,6,7,8]]
-        N_pose = self.N[0:6, 0:6] 
-        
+        N_pose = self.N[0:6, 0:6] # Measurement noise for pose
+
         S = H_pose @ self.P @ H_pose.T + N_pose
-        K = self.P @ H_pose.T @ np.linalg.inv(S)
+        L = self.P @ H_pose.T @ np.linalg.inv(S) # Kalman Gain (9x6)
 
-        # 5. Update State
-        # delta_xi is 9x1: [rot_corr, vel_corr, pos_corr]
-        delta_xi = K @ z
-        
-        # Apply update using the Exponential Map
-        # Left-Invariant Update: X_new = X_old * exp(delta_xi^wedge)
+        delta_xi = L @ v # 9x1 correction in the Lie algebra
+
         self.X = self.X @ expm(self.wedge(delta_xi))
-
-        # 6. Update Covariance (Joseph Form for stability)
-        I = np.eye(9)
-        IKH = I - K @ H_pose
-        self.P = IKH @ self.P @ IKH.T + K @ N_pose @ K.T
         
-        # 7. Logging (removed DEBUG zeroing)
+        # Correct covariance
+        I = np.eye(9)
+        self.P = (I - (L @ H_pose)) @ self.P @ (I - (L @ H_pose)).T + L @ N_pose @ L.T
+
+        # Print
         rpy = R.from_matrix(self.X[0:3, 0:3]).as_euler('xyz', degrees=True)
         print(f"--- Correction Applied ---")
         print(f"Pos: {np.round(self.X[0:3, 4], 3)}")
         print(f"Ori: {np.round(rpy, 3)}")
 
-    # Takes a geometry_msgs/msg/Pose or PoseStamped and converts it to a 5x5
-    # homogeneous transform in SE_2(3).
-    def poseToHomogeneous(self, msg, velocity=[0, 0, 0]):
+    import numpy as np
 
-        Y = np.eye(5)
-        pose_msg = msg.pose if hasattr(msg, "pose") else msg
+    def get_ros_pose_covariance(self, cov_9x9: np.ndarray, R_b2w: np.ndarray = None) -> np.ndarray:
+        """
+        Extracts a 6x6 Pose covariance from a 9x9 SE_2(3) covariance matrix.
+        
+        Assumed 9x9 state ordering: [Rotation (0:3), Velocity (3:6), Position (6:9)]
+        Target 6x6 ROS ordering:    [Position (0:3), Rotation (3:6)]
+        
+        Args:
+            cov_9x9: The 9x9 covariance matrix from the InEKF.
+            R_b2w: Optional 3x3 rotation matrix (body to world). If provided, 
+                rotates the covariance from the body frame to the world frame.
+                
+        Returns:
+            cov_6x6: A 6x6 numpy array suitable for geometry_msgs/PoseWithCovariance.
+        """
+        # 1. Extract the relevant 3x3 sub-blocks from the 9x9 matrix
+        # (Update these slice indices if your filter uses a different state order)
+        sigma_phi_phi = cov_9x9[0:3, 0:3]  # Rotation variance
+        sigma_p_p     = cov_9x9[6:9, 6:9]  # Position variance
+        sigma_p_phi   = cov_9x9[6:9, 0:3]  # Cross-correlation: Position-Rotation
+        sigma_phi_p   = cov_9x9[0:3, 6:9]  # Cross-correlation: Rotation-Position
+        
+        # 2. Assemble the 6x6 matrix in ROS format (Position first, then Rotation)
+        cov_6x6 = np.zeros((6, 6))
+        cov_6x6[0:3, 0:3] = sigma_p_p
+        cov_6x6[3:6, 3:6] = sigma_phi_phi
+        cov_6x6[0:3, 3:6] = sigma_p_phi
+        cov_6x6[3:6, 0:3] = sigma_phi_p
+        
+        # 3. Transform to world frame if a rotation matrix is provided
+        if R_b2w is not None:
+            # Create a 6x6 block diagonal matrix with R_b2w
+            R_6x6 = np.zeros((6, 6))
+            R_6x6[0:3, 0:3] = R_b2w
+            R_6x6[3:6, 3:6] = R_b2w
+            
+            # Apply the transformation: R * Sigma * R^T
+            cov_6x6 = R_6x6 @ cov_6x6 @ R_6x6.T
+            
+        return cov_6x6
 
-        # Columns in Y expect shape (3,), so flatten vectors before assignment.
-        v = np.asarray(velocity, dtype=float).reshape(3)
-        p = np.asarray([pose_msg.position.x, pose_msg.position.y, pose_msg.position.z], dtype=float).reshape(3)
-        q_list = [pose_msg.orientation.x, pose_msg.orientation.y, pose_msg.orientation.z, pose_msg.orientation.w]
-        orientation = R.from_quat(q_list)
-        Y[0:3, 0:3] = orientation.as_matrix()  
-        Y[0:3, 3] = v
-        Y[0:3, 4] = p
-
-        return Y
     
     def pubPose(self):
         
-        pose = PoseStamped()
+        pose = PoseWithCovarianceStamped()
 
         pose.header.frame_id = "map"
         pose.header.stamp = self.get_clock().now().to_msg()
 
         q = R.from_matrix(self.X[0:3, 0:3]).as_quat()
-        pose.pose.orientation.x = q[0]
-        pose.pose.orientation.y = q[1]
-        pose.pose.orientation.z = q[2]
-        pose.pose.orientation.w = q[3]
+        pose.pose.pose.orientation.x = q[0]
+        pose.pose.pose.orientation.y = q[1]
+        pose.pose.pose.orientation.z = q[2]
+        pose.pose.pose.orientation.w = q[3]
 
         p = self.X[0:3, 4].flatten()
-        pose.pose.position.x = p[0]
-        pose.pose.position.y = p[1]
-        pose.pose.position.z = p[2]
+        pose.pose.pose.position.x = p[0]
+        pose.pose.pose.position.y = p[1]
+        pose.pose.pose.position.z = p[2]
+
+        cov6x6 = self.get_ros_pose_covariance(self.P, R_b2w=self.X[0:3, 0:3])
+        pose.pose.covariance = cov6x6.flatten().tolist()
 
         self.posePub.publish(pose)
 
