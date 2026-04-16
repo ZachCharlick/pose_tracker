@@ -66,3 +66,25 @@ ros2 run imu_complementary_filter complementary_filter_node \
   -p publish_tf:=false \
   -r /imu/data_raw:=/imu/data \
   -r /imu/data:=/imu_filtered
+
+
+How to run augmented video from ros bag
+
+source install/setup.bash
+ros2 bag play /path/to/bag_folder --clock -l
+
+source install/setup.bash
+ros2 run image_augment_ros image_augment_node \
+  --ros-args \
+  -p image_topic:=/camera/camera/color/image_raw \
+  -p output_topic:=/camera/camera/color/image_augmented \
+  -p mode:=splotches \
+  -p effect_seed:=7
+# mode: splotches | flicker | distortion
+# optional: -p splotches_count:=140 -p splotches_square_side:=6
+# optional (flicker): -p flicker_blackout_probability:=0.05 -p flicker_burst_frames_min:=1 -p flicker_burst_frames_max:=5
+# optional (distortion): -p distortion_blur_sigma:=3.2 -p distortion_radial_k:=0.22
+
+source install/setup.bash
+ros2 run rqt_image_view rqt_image_view
+# topic: /camera/camera/color/image_augmented
