@@ -9,6 +9,13 @@ pose_filter:
       0.0, 0.0, 0.0, 1.0 
     ]
 
+    # initial_state: [
+    #   0.0, -1.0, 0.0, 0.0, 
+    #   1.0, 0.0, 0.0, 0.0, 
+    #   0.0, 0.0, 1.0, 0.0, 
+    #   0.0, 0.0, 0.0, 1.0 
+    # ]
+
     # 6x6 Initial Covariance Matrix (P)
     # 0.1 on the diagonals represents moderate initial uncertainty across all 9 error states.
     initial_covariance: [
@@ -27,8 +34,8 @@ pose_filter:
       0.001, 0.0,   0.0,   0.0,   0.0,   0.0, 
       0.0,   0.001, 0.0,   0.0,   0.0,   0.0, 
       0.0,   0.0,   0.001, 0.0,   0.0,   0.0, 
-      0.0,   0.0,   0.0,   0.001, 0.0,   0.0, 
-      0.0,   0.0,   0.0,   0.0,   0.001, 0.0, 
+      0.0,   0.0,   0.0,   0.001,  0.0,   0.0, 
+      0.0,   0.0,   0.0,   0.0,   0.001,  0.0, 
       0.0,   0.0,   0.0,   0.0,   0.0,   0.001
     ]
 
@@ -36,9 +43,9 @@ pose_filter:
     # Governs trust in the incoming camera pose. Set slightly higher than Q (0.01) 
     # to account for typical visual odometry/pose estimation jitter.
     measurement_noise: [
-      0.000000274, 0.0,  0.0,  0.0,  0.0,  0.0,  
-      0.0,  0.000000274, 0.0,  0.0,  0.0,  0.0,  
-      0.0,  0.0,  0.000000274, 0.0,  0.0,  0.0,  
+      0.01, 0.0,  0.0,  0.0,  0.0,  0.0,  
+      0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  
+      0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  
       0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  
       0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  
       0.0,  0.0,  0.0,  0.0,  0.0,  0.01 

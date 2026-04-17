@@ -158,7 +158,6 @@ class InEKF(Node):
     # Propagate orientation only using the IMU data
     def prediction(self, msg):
 
-
         # Grab the time since the last IMU message
         currTime = self.get_clock().now().to_msg().sec + self.get_clock().now().to_msg().nanosec * 1e-9
         if self.lastMeas == 0: # Handle first run
@@ -170,21 +169,25 @@ class InEKF(Node):
         # Propagate the state and update with left invariant form
         u = np.hstack([msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z, np.zeros(3)]) * dt
         self.X = self.X @ expm(self.wedge(u)) 
+        # self.X = self.X @ (np.eye(4) + self.wedge(u)) # Left invariant Euler integration, should be fine for small dt   
 
         # Propagate the covariance using the discrete noise covariance, state transition matrix is Identity
         # TODO: Verify this, we might need to compute the state transition matrix using the adjoint
-        self.P = self.P + self.getQd(dt)
+        self.P = self.P + self.Q
 
-        # Get the position and orientation for printing
-        pos = self.X[0:3, 3].flatten()
-        rpy = R.from_matrix(self.X[0:3, 0:3]).as_euler('xyz', degrees=True)
-        state_str = (
-            f"\n--- SE_2(3) Prediction ---\n"
-            f"Pos [m]   : {np.round(pos, 3)}\n"
-            f"Ori [deg] : {np.round(rpy, 3)}\n"
-            f"--------------------------"
-        )
-        print(state_str)
+        # print(f"--- Covariance Propagated with Q ---")
+        # print(np.round(self.P, 3))
+
+        # # Get the position and orientation for printing
+        # pos = self.X[0:3, 3].flatten()
+        # rpy = R.from_matrix(self.X[0:3, 0:3]).as_euler('xyz', degrees=True)
+        # state_str = (
+        #     f"\n--- SE_2(3) Prediction ---\n"
+        #     f"Pos [m]   : {np.round(pos, 3)}\n"
+        #     f"Ori [deg] : {np.round(rpy, 3)}\n"
+        #     f"--------------------------"
+        # )
+        # print(state_str)
 
 
     # Correction step (callback on pose from pose tracker)
@@ -209,11 +212,11 @@ class InEKF(Node):
         I = np.eye(6)
         self.P = (I - L @ self.H) @ self.P @ (I - L @ self.H).T + L @ N_local @ L.T
 
-        # Print
-        rpy = R.from_matrix(self.X[0:3, 0:3]).as_euler('xyz', degrees=True)
-        print(f"--- Correction Applied ---")
-        print(f"Pos: {np.round(self.X[0:3, 3], 3)}")
-        print(f"Ori: {np.round(rpy, 3)}")
+        # # Print
+        # rpy = R.from_matrix(self.X[0:3, 0:3]).as_euler('xyz', degrees=True)
+        # print(f"--- Correction Applied ---")
+        # print(f"Pos: {np.round(self.X[0:3, 3], 3)}")
+        # print(f"Ori: {np.round(rpy, 3)}")
 
 
     def poseToSE3(self, pose):
