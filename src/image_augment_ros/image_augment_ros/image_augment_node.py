@@ -27,9 +27,14 @@ class ImageAugmentNode(Node):
         self.declare_parameter('mode', MODE_SPLOTCHES)
         self.declare_parameter('effect_seed', 7)
 
-        # Dirty camera splotches — many black squares, uniform side length (px)
-        self.declare_parameter('splotches_count', 140)
-        self.declare_parameter('splotches_square_side', 6)
+        # Lens dirt: soft Gaussian darkening (see-through smudges), fixed positions
+        self.declare_parameter('splotches_count', 150)
+        self.declare_parameter('splotches_sigma_min', 10.0)
+        self.declare_parameter('splotches_sigma_max', 40.0)
+        self.declare_parameter('splotches_peak_darken_min', 0.06)
+        self.declare_parameter('splotches_peak_darken_max', 0.48)
+        # Beta(b,b) in (0,1) for x/y; b>1 peaks at center. Larger b → tighter around middle.
+        self.declare_parameter('splotches_spawn_center_beta', 2.5)
 
         # Flicker — only when idle: each frame roll this to start a black burst (not during a burst).
         self.declare_parameter('flicker_blackout_probability', 0.05)
@@ -56,8 +61,16 @@ class ImageAugmentNode(Node):
         self._rng = np.random.default_rng(seed)
 
         self._splotch_n = int(self.get_parameter('splotches_count').get_parameter_value().integer_value)
-        self._splotch_square_side = max(
-            1, int(self.get_parameter('splotches_square_side').get_parameter_value().integer_value))
+        s_lo = float(self.get_parameter('splotches_sigma_min').get_parameter_value().double_value)
+        s_hi = float(self.get_parameter('splotches_sigma_max').get_parameter_value().double_value)
+        self._splotch_sigma_lo = max(0.5, min(s_lo, s_hi))
+        self._splotch_sigma_hi = max(self._splotch_sigma_lo, s_hi)
+        p_lo = float(self.get_parameter('splotches_peak_darken_min').get_parameter_value().double_value)
+        p_hi = float(self.get_parameter('splotches_peak_darken_max').get_parameter_value().double_value)
+        self._splotch_peak_lo = float(np.clip(min(p_lo, p_hi), 0.0, 0.92))
+        self._splotch_peak_hi = float(np.clip(max(p_lo, p_hi), 0.0, 0.92))
+        sb = float(self.get_parameter('splotches_spawn_center_beta').get_parameter_value().double_value)
+        self._splotch_spawn_beta = max(0.55, sb)
         self._flicker_p = float(
             self.get_parameter('flicker_blackout_probability').get_parameter_value().double_value)
         bmin = int(self.get_parameter('flicker_burst_frames_min').get_parameter_value().integer_value)
@@ -77,7 +90,7 @@ class ImageAugmentNode(Node):
             self.get_parameter('distortion_radial_k').get_parameter_value().double_value)
 
         self._bridge = CvBridge()
-        self._splotch_specs: Optional[List[Tuple[int, int, int]]] = None
+        self._splotch_specs: Optional[List[Tuple[int, int, float, float]]] = None
         self._splotch_hw: Optional[Tuple[int, int]] = None
 
         self._pub = self.create_publisher(Image, out_topic, 10)
@@ -92,29 +105,43 @@ class ImageAugmentNode(Node):
         if self._splotch_specs is not None and self._splotch_hw == (h, w):
             return
         n = max(0, self._splotch_n)
-        side = self._splotch_square_side
-        specs: List[Tuple[int, int, int]] = []
+        slo, shi = self._splotch_sigma_lo, self._splotch_sigma_hi
+        plo, phi = self._splotch_peak_lo, self._splotch_peak_hi
+        specs: List[Tuple[int, int, float, float]] = []
+        b = self._splotch_spawn_beta
         for _ in range(n):
-            cx = int(self._rng.integers(0, w))
-            cy = int(self._rng.integers(0, h))
-            specs.append((cx, cy, side))
+            ux = float(self._rng.beta(b, b))
+            uy = float(self._rng.beta(b, b))
+            cx = min(int(ux * w), max(0, w - 1))
+            cy = min(int(uy * h), max(0, h - 1))
+            sigma = float(self._rng.uniform(slo, shi))
+            peak = float(self._rng.uniform(plo, phi))
+            specs.append((cx, cy, sigma, peak))
         self._splotch_specs = specs
         self._splotch_hw = (h, w)
         self.get_logger().info(
-            f'Locked {len(specs)} square splotches ({side}px side) for {w}x{h} (fixed dead pixels).')
+            f'Locked {len(specs)} dark dirt blobs for {w}x{h}.')
 
     def _apply_splotches(self, frame: np.ndarray) -> None:
         h, w = frame.shape[:2]
         self._ensure_splotches(h, w)
         assert self._splotch_specs is not None
-        for cx, cy, side in self._splotch_specs:
-            half = side // 2
+        for cx, cy, sigma, peak in self._splotch_specs:
+            half = int(np.ceil(4.0 * sigma)) + 1
             x0 = max(0, cx - half)
             y0 = max(0, cy - half)
-            x1 = min(w, x0 + side)
-            y1 = min(h, y0 + side)
-            if x1 > x0 and y1 > y0:
-                frame[y0:y1, x0:x1] = 0
+            x1 = min(w, cx + half + 1)
+            y1 = min(h, cy + half + 1)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            xs = np.arange(x0, x1, dtype=np.float32)
+            ys = np.arange(y0, y1, dtype=np.float32)
+            dx = xs - float(cx)
+            dy = ys[:, np.newaxis] - float(cy)
+            g = np.exp(-(dx * dx + dy * dy) / (2.0 * sigma * sigma + 1e-6))
+            patch = frame[y0:y1, x0:x1].astype(np.float32)
+            patch *= 1.0 - peak * g[..., np.newaxis]
+            frame[y0:y1, x0:x1] = np.clip(patch, 0.0, 255.0).astype(np.uint8)
 
     def _apply_flicker(self, frame: np.ndarray) -> None:
         p = float(np.clip(self._flicker_p, 0.0, 1.0))

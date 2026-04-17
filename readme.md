@@ -81,7 +81,7 @@ ros2 run image_augment_ros image_augment_node \
   -p mode:=splotches \
   -p effect_seed:=7
 # mode: splotches | flicker | distortion
-# optional: -p splotches_count:=140 -p splotches_square_side:=6
+# optional (splotches / dark dirt): -p splotches_count:=150 -p splotches_sigma_min:=10.0 -p splotches_sigma_max:=40.0 -p splotches_peak_darken_min:=0.06 -p splotches_peak_darken_max:=0.48 -p splotches_spawn_center_beta:=2.5
 # optional (flicker): -p flicker_blackout_probability:=0.05 -p flicker_burst_frames_min:=1 -p flicker_burst_frames_max:=5
 # optional (distortion): -p distortion_blur_sigma:=3.2 -p distortion_radial_k:=0.22
 
