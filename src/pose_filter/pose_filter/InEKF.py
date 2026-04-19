@@ -37,11 +37,11 @@ class InEKF(Node):
 
         # Set up subscribers
         self.imuSub = self.create_subscription(Imu, "imu/data", self.prediction, 1)
-        self.poseSub = self.create_subscription(PoseStamped, "forearm_pose_camera", self.correction, 1)
+        self.poseSub = self.create_subscription(PoseStamped, "upperleg_pose_camera", self.correction, 1)
         
         # Set up publishers
         self.posePub = self.create_publisher(PoseWithCovarianceStamped, "handPose", 1)
-
+        # self.poseCorrectionPub = self.create_publisher(PoseWithCovarianceStamped, "correctionPoseDebug", 1)
         self.timer = self.create_timer(0.2, self.pubPose)
 
 
@@ -100,6 +100,14 @@ class InEKF(Node):
         )
         self.declare_parameter("gravity_vector", defaultGrav.tolist(), gravDesc)
         self.g = np.asarray(self.get_parameter("gravity_vector").value).reshape((3,1))
+
+        defaultRunCorrection = True
+        runCorrectionDesc = ParameterDescriptor(
+            description="Whether to run correction or prediction only for debugging",
+            read_only=False
+        )
+        self.declare_parameter("run_correction", defaultRunCorrection, runCorrectionDesc)
+        self.run_correction = self.get_parameter("run_correction").value
 
 
     # SE(3) Adjoint definition (Double check this)
@@ -166,11 +174,25 @@ class InEKF(Node):
         dt = currTime - self.lastMeas
         self.lastMeas = currTime
 
+        u_only_angulars = np.hstack([msg.angular_velocity.x, -msg.angular_velocity.y, -msg.angular_velocity.z])
+
+        Rot_for_wrist = np.asarray([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
+
+        # rotation of 180 degrees about the z axis
+        Rot_for_leg = np.asarray([[-1, 0, 0], [0, -1, 0], [0, 0, 1]])
+        
+        # --------------------- Use this to change transform for wrist or leg --------------------- #
+        u_only_angulars = Rot_for_wrist @ u_only_angulars
+        # u_only_angulars = Rot_for_leg @ u_only_angulars
+        # -------------------------------------------------------------------------------------------- #
+
         # Propagate the state and update with left invariant form
-        u = np.hstack([msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z, np.zeros(3)]) * dt
+        u = np.hstack([u_only_angulars, np.zeros(3)]) * dt
+
+        # rotate around x by 90 degrees
+
         self.X = self.X @ expm(self.wedge(u)) 
         # self.X = self.X @ (np.eye(4) + self.wedge(u)) # Left invariant Euler integration, should be fine for small dt   
-
         # Propagate the covariance using the discrete noise covariance, state transition matrix is Identity
         # TODO: Verify this, we might need to compute the state transition matrix using the adjoint
         self.P = self.P + self.Q
@@ -192,7 +214,8 @@ class InEKF(Node):
 
     # Correction step (callback on pose from pose tracker)
     def correction(self, msg):
-    
+        if not self.run_correction:
+            return
         # Set it to work for both Pose and PoseStamped
         pose_msg = msg.pose if hasattr(msg, "pose") else msg
 
@@ -218,6 +241,8 @@ class InEKF(Node):
         # print(f"Pos: {np.round(self.X[0:3, 3], 3)}")
         # print(f"Ori: {np.round(rpy, 3)}")
 
+        # self.pubPoseCorrection(self.X)
+
 
     def poseToSE3(self, pose):
         T = np.eye(4)
@@ -230,10 +255,16 @@ class InEKF(Node):
         
         pose = PoseWithCovarianceStamped()
 
-        pose.header.frame_id = "map"
+        pose.header.frame_id = "camera_color_optical_frame"
         pose.header.stamp = self.get_clock().now().to_msg()
 
-        q = R.from_matrix(self.X[0:3, 0:3]).as_quat()
+        currOrientation = self.X[0:3, 0:3]
+        # # rotate around x by 180  degrees
+        currOrientation = R.from_matrix(currOrientation).as_matrix() @ np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+        currOrientation = R.from_matrix(currOrientation).as_matrix()
+
+
+        q = R.from_matrix(currOrientation).as_quat()
         pose.pose.pose.orientation.x = q[0]
         pose.pose.pose.orientation.y = q[1]
         pose.pose.pose.orientation.z = q[2]
@@ -247,6 +278,27 @@ class InEKF(Node):
         pose.pose.covariance = self.P.flatten().tolist()
 
         self.posePub.publish(pose)
+
+    # def pubPoseCorrection(self, X_corr):
+        
+    #     pose = PoseWithCovarianceStamped()
+
+    #     pose.header.frame_id = "map"
+    #     pose.header.stamp = self.get_clock().now().to_msg()
+
+    #     q = R.from_matrix(X_corr[0:3, 0:3]).as_quat()
+    #     pose.pose.pose.orientation.x = q[0]
+    #     pose.pose.pose.orientation.y = q[1]
+    #     pose.pose.pose.orientation.z = q[2]
+    #     pose.pose.pose.orientation.w = q[3]
+
+    #     p = X_corr[0:3, 3].flatten()
+    #     pose.pose.pose.position.x = p[0]
+    #     pose.pose.pose.position.y = p[1]
+    #     pose.pose.pose.position.z = p[2]
+
+
+    #     self.poseCorrectionPub.publish(pose)
 
 
 def main(args=None):

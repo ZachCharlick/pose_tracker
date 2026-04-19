@@ -28,7 +28,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'pose_filter = pose_filter.InEKF:main'
+            'pose_filter = pose_filter.InEKF:main',
+            'trajectory_overlay_node = pose_filter.trajectory_overlay_node:main',
+            'tf_rmse_plot_node = pose_filter.tf_rmse_plot_node:main',
         ],
     },
 )

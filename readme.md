@@ -42,6 +42,16 @@ ros2 run pose_landmarker_ros forearm_pose_3d_node \
   -p camera_info_topic:=/camera/camera/color/camera_info \
   -p output_pose_topic:=forearm_pose_camera
 
+To get upper leg pose (right hip to right knee, landmarks 24 -> 26)
+
+source install/setup.bash
+ros2 run pose_landmarker_ros upperleg_pose_3d_node \
+  --ros-args \
+  -p landmarks_topic:=pose_landmarks \
+  -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+  -p camera_info_topic:=/camera/camera/color/camera_info \
+  -p output_pose_topic:=upperleg_pose_camera
+
 
 NEXT ---- SETTING UP IMU w/ microROS
 # for setup git clone -b humble https://github.com/micro-ROS/micro_ros_setup.git
@@ -66,3 +76,23 @@ ros2 run imu_complementary_filter complementary_filter_node \
   -p publish_tf:=false \
   -r /imu/data_raw:=/imu/data \
   -r /imu/data:=/imu_filtered
+
+
+# Running Custom Filter
+source install/setup.bash
+ros2 run pose_filter pose_filter --ros-args --params-file pose_tracker/src/pose_filter/config/config.yaml
+
+# Visualize InEKF vs Mocap GT in camera frame (matplotlib 3D)
+# Computes T_camera_wrist = inv(T_world_camera_530_proj) * T_world_wrist_strap
+source install/setup.bash
+ros2 run pose_filter trajectory_overlay_node \
+  --ros-args \
+  --params-file /home/armlab/ros2_ws/pose_tracker/src/pose_filter/config/trajectory_overlay.yaml
+
+# Optional: save figure for a paper (continuous overwrite while running + on shutdown)
+ros2 run pose_filter trajectory_overlay_node \
+  --ros-args \
+  --params-file /home/armlab/ros2_ws/pose_tracker/src/pose_filter/config/trajectory_overlay.yaml \
+  -p save_figure:=true \
+  -p save_path:=/home/armlab/ros2_ws/pose_tracker/ekf_vs_gt.png \
+  -p save_dpi:=400
