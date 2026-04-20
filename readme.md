@@ -1,8 +1,8 @@
-# Pose Tracker — Invariant EKF for Robust 3D Forearm Tracking
+# Pose Tracker — SE(3) Invariant EKF for Robust 3D Forearm Tracking
 
-A ROS 2 pipeline that fuses a MediaPipe-based vision measurement with IMU data through a **Right-Invariant Extended Kalman Filter (RI-EKF) on SE₂(3)** to produce a robust 3D forearm pose estimate that degrades gracefully under camera occlusion, blackout, or lens degradation.
+A ROS 2 pipeline that fuses a MediaPipe-based vision measurement with IMU data through an **Invariant Extended Kalman Filter (InEKF) on SE(3)**: **gyro-only** propagation on the group plus a **left-invariant** vision correction with adjoint-weighted measurement noise. The result is a robust 3D forearm pose estimate that degrades gracefully under camera occlusion, blackout, or lens degradation.
 
-> Final project for **ROB 530: Mobile Robotics** (University of Michigan). The core motivation for choosing an InEKF over a standard EKF is that the InEKF's error dynamics on the Lie group SE₂(3) are state-independent, which gives better consistency and recovery behavior during extended periods of measurement dropout.
+> Final project for **ROB 530: Mobile Robotics** (University of Michigan). The core motivation for choosing an InEKF over a standard EKF is that the state and covariance live on **SE(3)** and **𝔰𝔢(3)** rather than in a Euclidean parameterization of pose, which keeps uncertainty geometrically meaningful and recovery well-behaved during extended periods of vision dropout while the filter runs **IMU-only** (orientation from the gyro; accelerometer is not used for translation in prediction).
 
 ---
 
@@ -28,12 +28,12 @@ A ROS 2 pipeline that fuses a MediaPipe-based vision measurement with IMU data t
 
 The pipeline estimates the 3D pose (position + orientation) of a person's forearm in a fixed world frame using two asynchronous information sources:
 
-1. **Prediction (fast, always available):** A body-mounted IMU provides angular velocity and linear acceleration, which are propagated through the SE₂(3) motion model at IMU rate.
+1. **Prediction (fast, always available):** A body-mounted IMU provides angular velocity (and linear acceleration, which the filter does not use for propagation). **Only the gyro** drives the **SE(3)** prediction at IMU rate; translation is not integrated from the accelerometer (see [Mathematical Background](#mathematical-background)).
 2. **Correction (slower, drop-prone):** An RGB-D camera produces a per-frame 3D forearm pose by running MediaPipe's Pose Landmarker on the color image and fusing the 2D landmarks with the aligned depth stream and camera intrinsics.
 
 Ground-truth validation is provided by a motion capture system (100 Hz over ROS topics), which is used only for evaluation, not in the filter.
 
-The pipeline's key property is that **when the camera signal is degraded or lost entirely, the filter continues to propagate its pose estimate using the IMU alone, and the RI-EKF's geometric structure keeps the covariance and mean consistent on the manifold** so that recovery is fast and well-behaved once vision returns.
+The pipeline's key property is that **when the camera signal is degraded or lost entirely, the filter continues to propagate orientation using the gyro alone, and the InEKF's SE(3) structure keeps the mean on the group and the covariance on 𝔰𝔢(3)** so that recovery is fast and well-behaved once vision returns.
 
 ## Package Layout
 
@@ -43,7 +43,7 @@ Four ROS 2 packages, each independently buildable:
 | --- | --- | --- |
 | `pose_landmarker_interfaces` | CMake / IDL | Custom `PoseLandmark` and `PoseLandmarksStamped` messages |
 | `pose_landmarker_ros` | ament_python | MediaPipe Pose Landmarker node + 3D forearm-pose node (landmarks + depth → `PoseStamped`) |
-| `pose_filter` | ament_python | The RI-EKF on SE₂(3); subscribes to IMU and camera pose, publishes fused pose with covariance |
+| `pose_filter` | ament_python | InEKF on **SE(3)** (6×6 covariance); subscribes to IMU and camera pose, publishes fused pose with covariance |
 | `image_augment_ros` | ament_python | Optional image-degradation node used for the robustness experiments (splotches, flicker/blackout, defocus+distortion) |
 
 ## Data Flow
@@ -69,45 +69,52 @@ The image-augment node is optional and is only inserted into the graph for the d
 
 ## Mathematical Background
 
-**State.** The filter state lives on SE₂(3), the group of extended rigid-body transformations, represented as a 5×5 matrix:
+We use an **Invariant Extended Kalman Filter on SE(3)** with a compact pose matrix, a **6×6** covariance on the Lie algebra **𝔰𝔢(3)**, **gyro-only prediction** (translation not driven by the accelerometer, which we treat as too noisy for propagation), and a **left-invariant vision correction** with measurement noise transported by the adjoint.
+
+**State.** The mean state is `X ∈ SE(3)`: orientation and position are stored in one homogeneous transform
 
 ```
-        ┌ R  v  p ┐
-    X = │ 0  1  0 │       R ∈ SO(3), v ∈ ℝ³, p ∈ ℝ³
-        └ 0  0  1 ┘
+        ┌ R   p ┐
+    X = │       │ ,     R ∈ SO(3),  p ∈ ℝ³
+        └ 0   1 ┘
 ```
 
-The corresponding error state is a 9-dimensional vector `ξ = [φ; ζ; ρ]` (rotation / velocity / position Lie-algebra increments), and the covariance `P ∈ ℝ⁹ˣ⁹` lives in the tangent space at the current state.
+The covariance is `P ∈ ℝ⁶ˣ⁶`, representing uncertainty in the **𝔰𝔢(3)** tangent coordinates. We write `u^∧` for the **hat** map ℝ⁶ → 𝔰𝔢(3) (angular rates in the top-left 3×3 skew block, linear part in the first three rows of the last column), and `(·)^∨` for the **vee** map back to ℝ⁶.
 
-**Prediction.** Given a body-frame IMU reading (ω, a) over a time step dt, the node:
-
-1. Rotates the world-frame gravity vector into the body frame and subtracts it from the accelerometer to obtain a gravity-compensated linear acceleration.
-2. Builds the 9-vector `ξ = [ω·dt, a·dt, R_curr^T·v_world·dt]` and forms its `wedge` into the 5×5 Lie-algebra matrix.
-3. Right-multiplies: `X ← X · exp(ξ^)`.
-4. Propagates covariance with a linearized state-transition matrix `Φ = I + A·dt`, where `A` is the standard SE₂(3) continuous-time error dynamics, and `P ← Φ P Φᵀ + Q_d`, with `Q_d = Φ (Q·dt) Φᵀ`.
-
-**Correction.** The vision measurement gives a pose (R_meas, p_meas) of the forearm in the camera frame. We form the innovation **in the current body frame**:
+**Prediction — integrate the gyro.** The mean is propagated on the group with the angular-velocity twist; **position is not predicted from the IMU** (no translational part in the twist):
 
 ```
-    v_φ  = log(R_state^T · R_meas)           ∈ ℝ³
-    v_p  = R_state^T · (p_meas − p_state)    ∈ ℝ³
-    y    = [v_φ; v_p]                        ∈ ℝ⁶
+    X⁺ = X · exp(u^∧)
+    P⁺ = P + Q
 ```
 
-With a constant observation Jacobian `H_pose ∈ ℝ⁶ˣ⁹` (identity on the rotation and position blocks, zero on the velocity block), the Kalman gain, state update, and Joseph-form covariance update are standard:
+with `u = (ωₓ, ωᵧ, ω_z, 0, 0, 0)` (body-frame angular velocity in the first three components, zeros in the translation slots so `exp(u^∧)` updates **R** only). In discrete time, `Q` is the usual process-noise increment on 𝔰𝔢(3) (implementation may scale by `Δt`).
+
+**Correction — left-invariant vision update.** Let `Y ∈ SE(3)` be the vision pose measurement. The innovation is computed **on the group** and then mapped to ℝ⁶:
 
 ```
-    S = H P Hᵀ + N
+    v = ( log( X⁻¹ Y ) )^∨
+```
+
+Measurement noise `N` (6×6 in ℝ⁶) is expressed in the sensor frame; for the update we transport it with the **adjoint** `Ad_{X⁻¹}` so it is consistent with the error coordinates at `X`:
+
+```
+    S = H P Hᵀ + Ad_{X⁻¹} N Ad_{X⁻¹}ᵀ
     L = P Hᵀ S⁻¹
-    X ← X · exp((L·y)^)
-    P ← (I − L H) P (I − L H)ᵀ + L N Lᵀ
+    X⁺ = X · exp( (L v)^∧ )
 ```
 
-Because the update is applied in the body-frame tangent space and then lifted back onto the group with `exp`, orientation stays a valid rotation matrix at every step.
+Covariance is updated in **Joseph form** for numerical stability:
 
-**Why RI-EKF instead of a standard EKF?** In a standard EKF, linearizing the orientation update around the current estimate makes the error dynamics depend on the state itself, which causes the filter to become inconsistent during large rotational excursions or long propagation intervals. On SE₂(3), the right-invariant error has autonomous (state-independent) linearized dynamics, which is exactly the regime where IMU-only propagation over a camera blackout lives. This is the key theoretical reason the InEKF recovers more cleanly than a standard EKF when vision comes back online.
+```
+    P⁺ = (I − L H) P (I − L H)ᵀ + L ( Ad_{X⁻¹} N Ad_{X⁻¹}ᵀ ) Lᵀ
+```
 
-For the full derivation, see the ROB 530 lecture notes on matrix Lie groups and the Invariant EKF, which this implementation follows directly.
+Here `H` is the linearized observation map ℝ⁶ → ℝ⁶ (in our setup a full-pose measurement uses a constant `H`; the structure above is the generic invariant-EKF correction). The adjoint **Ad** appears wherever noise must be expressed in the same frame as the innovation.
+
+**Why an InEKF instead of a Euclidean EKF?** Pose lives on a curved manifold; a naive EKF on Euler angles or a concatenated vector can distort uncertainty and consistency, especially over **IMU-only** stretches when vision drops. Propagating and correcting **on SE(3)** with `log` / `exp` and an invariant measurement update keeps the mean on the group and the covariance in a meaningful tangent space, which improves behavior when measurements return after occlusion or dropout.
+
+For derivations and adjoint details, see the ROB 530 notes on matrix Lie groups and the Invariant EKF.
 
 ## Prerequisites
 
