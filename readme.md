@@ -164,138 +164,80 @@ Each node is run independently. A typical full-pipeline launch with the RealSens
 
 ```bash
 ros2 launch realsense2_camera rs_launch.py \
-    enable_color:=true enable_depth:=true align_depth.enable:=true
-```
+    align_depth.enable:=true \
+    pointcloud.enable:=true \
+    depth_module.depth_profile:=640x480x30 \
+    rgb_camera.color_profile:=640x480x30
 
-**2. MediaPipe pose landmarker:**
+RGB image is at /camera/camera/color/image_raw
 
-```bash
-ros2 run pose_landmarker_ros pose_landmarker_node --ros-args \
-    -p model_path:=/abs/path/to/pose_landmarker_heavy.task \
-    -p image_topic:=/camera/camera/color/image_raw \
-    -p publish_annotated_image:=true
-```
+To get the landmarks and visualize
+## On install, need mediapipe
+# sudo apt install python3-pip -y
+# pip3 install mediapipe
+# pip3 install "numpy<2.0.0"
 
-**3. 3D forearm pose fusion:**
+source install/setup.bash
+ros2 run pose_landmarker_ros pose_landmarker_node \
+  --ros-args \
+  -p image_topic:=/camera/camera/color/image_raw \
+  -p model_path:=/home/armlab/ros2_ws/pose_tracker/assets/pose_landmarker_heavy.task \
+  -p publish_annotated_image:=true \
+  -p landmarks_topic:=pose_landmarks
 
-```bash
-ros2 run pose_landmarker_ros forearm_pose_3d_node
-```
+To get forearm pose
 
-By default this subscribes to `pose_landmarks`, `/camera/camera/aligned_depth_to_color/image_raw`, and `/camera/camera/color/camera_info`, and publishes `forearm_pose_camera`. The forearm is defined by landmarks 14 (right elbow) and 16 (right wrist); change `landmark_proximal` and `landmark_distal` for a different limb.
+source install/setup.bash
+ros2 run pose_landmarker_ros forearm_pose_3d_node \
+  --ros-args \
+  -p landmarks_topic:=pose_landmarks \
+  -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+  -p camera_info_topic:=/camera/camera/color/camera_info \
+  -p output_pose_topic:=forearm_pose_camera
 
-**4. IMU source:** any driver that publishes `sensor_msgs/Imu` on `imu/data`. Remap as needed.
 
-**5. The filter:**
+NEXT ---- SETTING UP IMU w/ microROS
+# for setup git clone -b humble https://github.com/micro-ROS/micro_ros_setup.git
+# ros2 run micro_ros_setup create_agent_ws.sh
+# ros2 run micro_ros_setup build_agent.sh
+# sudo usermod -a -G dialout $USER
+# newgrp dialout
+# source /opt/ros/humble/setup.bash
+# source install/setup.bash
+# sudo apt install ros-humble-imu-tools -y (for IMU vis plugin)
+# TO FIND PORT:: ls /dev/ttyUSB*
 
-```bash
-ros2 run pose_filter pose_filter --ros-args \
-    --params-file src/pose_filter/config/config.yaml
-```
+# w/ example port
+ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0
 
-**Degradation experiment.** Insert the augmenter between the camera and the landmarker by remapping the landmarker's `image_topic`:
+# Our IMU only provides angular velocities and linear accelerations. We need a filter! Try w/ the
+# ROS provided "imu_complementary_filter"
 
-```bash
-ros2 run image_augment_ros image_augment_node --ros-args -p mode:=flicker
-ros2 run pose_landmarker_ros pose_landmarker_node --ros-args \
-    -p model_path:=/abs/path/to/pose_landmarker_heavy.task \
-    -p image_topic:=/camera/camera/color/image_augmented
-```
+ros2 run imu_complementary_filter complementary_filter_node \
+  --ros-args \
+  -p use_mag:=false \
+  -p publish_tf:=false \
+  -r /imu/data_raw:=/imu/data \
+  -r /imu/data:=/imu_filtered
 
-Modes: `splotches` (lens-dirt Gaussian darkening blobs at fixed positions), `flicker` (random multi-frame blackouts), `distortion` (Gaussian defocus + radial barrel distortion). Tune per-mode parameters via the node's declared parameters.
 
-## Topics and Messages
+How to run augmented video from ros bag
 
-**Custom messages** (`pose_landmarker_interfaces`):
+source install/setup.bash
+ros2 bag play /path/to/bag_folder --clock -l
 
-- `PoseLandmark`: one landmark in MediaPipe's normalized image coordinates — `uint32 index`, `float32 x`, `float32 y`, `float32 z`, `float32 visibility`, `float32 presence`.
-- `PoseLandmarksStamped`: `Header header`, `uint32 image_width`, `uint32 image_height`, `PoseLandmark[] landmarks`.
+source install/setup.bash
+ros2 run image_augment_ros image_augment_node \
+  --ros-args \
+  -p image_topic:=/camera/camera/color/image_raw \
+  -p output_topic:=/camera/camera/color/image_augmented \
+  -p mode:=splotches \
+  -p effect_seed:=7
+# mode: splotches | flicker | distortion
+# optional (splotches / dark dirt): -p splotches_count:=150 -p splotches_sigma_min:=10.0 -p splotches_sigma_max:=40.0 -p splotches_peak_darken_min:=0.06 -p splotches_peak_darken_max:=0.48 -p splotches_spawn_center_beta:=2.5
+# optional (flicker): -p flicker_blackout_probability:=0.05 -p flicker_burst_frames_min:=1 -p flicker_burst_frames_max:=5
+# optional (distortion): -p distortion_blur_sigma:=3.2 -p distortion_radial_k:=0.22
 
-**Default topic graph:**
-
-| Direction | Topic | Type | Publisher |
-| --- | --- | --- | --- |
-| pub | `pose_landmarks` | `PoseLandmarksStamped` | `pose_landmarker_node` |
-| pub | `pose_image_annotated` (opt.) | `sensor_msgs/Image` | `pose_landmarker_node` |
-| pub | `forearm_pose_camera` | `geometry_msgs/PoseStamped` | `forearm_pose_3d_node` |
-| pub | `handPose` | `geometry_msgs/PoseWithCovarianceStamped` | `pose_filter` (5 Hz timer) |
-| pub | `/camera/camera/color/image_augmented` | `sensor_msgs/Image` | `image_augment_node` |
-| sub | `imu/data` | `sensor_msgs/Imu` | `pose_filter` |
-| sub | `forearm_pose_camera` | `geometry_msgs/PoseStamped` | `pose_filter` |
-
-The filter's published covariance is extracted from the 9×9 SE₂(3) covariance by pulling out the rotation and position blocks (plus their cross-correlation) and optionally rotating into the world frame. Velocity covariance is not exposed on the ROS pose message.
-
-## Configuration
-
-Filter tuning lives in `src/pose_filter/config/config.yaml`:
-
-- `initial_state` — 25-element row-major 5×5 SE₂(3) matrix. Defaults to identity (zero position, zero velocity, identity rotation).
-- `initial_covariance` — 81-element 9×9. Default: 0.1·I (moderate uncertainty).
-- `process_noise` (Q) — 9×9 continuous-time PSD. Default: 0.001·I. This governs how much the filter trusts the IMU prediction.
-- `measurement_noise` (N) — 9×9. Default: 0.01·I (one order of magnitude less trust in vision than in IMU). The correction uses only the 6×6 rotation+position sub-block.
-- `measurement_jacobian` (H) — 9×9 identity (declared but overridden at runtime by the constant `H_pose ∈ ℝ⁶ˣ⁹` used in the correction step).
-- `gravity_vector` — measured from a stationary IMU reading. The default `[-0.3, -0.116, -10.222]` is a placeholder; **you must replace this with a reading from your own static IMU calibration** or the filter will diverge.
-- `imu_accel_includes_gravity` — set `true` when the accelerometer publishes specific force (the common case), `false` if the driver has already compensated for gravity.
-
-Re-tune Q and N for your sensor suite. As a rough rule: raise N if the camera pose is jittery; raise Q if the IMU integration is drifting faster than expected during blackouts.
-
-## Degradation Experiments
-
-The planned evaluation compares the RI-EKF against a standard EKF baseline under three conditions:
-
-1. **Nominal tracking** — unimpeded camera, moderate motion. Measure steady-state RMS error against mocap and check NEES consistency.
-2. **Camera blackout** — 2–5 second full dropouts (`mode:=flicker` with a long burst) combined with aggressive forearm motion. Metrics: recovery error at the moment of vision return, convergence time back to the nominal error band, NEES during the blackout interval.
-3. **Lens degradation** — `splotches` and `distortion` modes to emulate partial sensor failure rather than complete dropout. Measures filter behavior when vision is available but noisy/biased rather than missing.
-
-The blackout experiment is where the InEKF is expected to most clearly outperform a standard EKF, because the state-independent error dynamics prevent the runaway linearization errors that a standard EKF accumulates during extended IMU-only propagation.
-
-## Design Notes and Caveats
-
-- **Forearm frame convention.** `forearm_pose_3d_node` builds a right-handed frame with `+x` pointing from the proximal landmark (elbow, 14) to the distal landmark (wrist, 16). The `y` axis is chosen via a reference cross product, so the *roll about the bone axis is under-determined* from two landmarks alone — the filter is essentially tracking position and bone orientation, not fingertip roll. Adding a third landmark (or a wrist IMU) would fully observe orientation.
-- **Depth-to-color mapping.** The 3D node assumes the depth stream has been aligned to color (RealSense's `align_depth.enable:=true`); if you use unaligned depth, the `_map_uv_to_depth` simple scaling will be wrong and you will need a proper extrinsic reprojection.
-- **`wedge` is defined twice** in `InEKF.py` — the second definition shadows the first. Both produce the same 5×5 matrix; the duplicate is a stylistic leftover from refactoring and is not a bug.
-- **Gravity vector must be measured.** The default in `config.yaml` is a placeholder. Record ~1 s of IMU accelerometer samples with the sensor stationary and flat, average them, and use that vector (with the correct sign for your convention).
-- **Timing.** `InEKF.prediction` uses the ROS clock, not the IMU message timestamp, to compute `dt`. On a wall-clock-synced system this is fine; if you play back bagfiles with `--clock`, remember that `dt` will reflect sim time only if the node is started in sim-time mode.
-- **Covariance frame.** The 9×9 `P` lives in the body-frame tangent space. `get_ros_pose_covariance` optionally rotates the position/rotation blocks into the world frame before publishing — useful for rviz ellipsoid visualization, but downstream consumers should be aware the raw `P` inside the filter is body-framed.
-
-## Repository Structure
-
-```
-src/
-├── pose_landmarker_interfaces/          # Custom ROS 2 messages
-│   ├── msg/
-│   │   ├── PoseLandmark.msg
-│   │   └── PoseLandmarksStamped.msg
-│   ├── CMakeLists.txt
-│   └── package.xml
-│
-├── pose_landmarker_ros/                 # Vision nodes
-│   ├── pose_landmarker_ros/
-│   │   ├── pose_landmarker_node.py      # Image → 33 landmarks (MediaPipe Tasks API)
-│   │   └── forearm_pose_3d_node.py      # Landmarks + depth → 3D PoseStamped
-│   ├── package.xml
-│   └── setup.py
-│
-├── pose_filter/                         # RI-EKF on SE_2(3)
-│   ├── pose_filter/
-│   │   └── InEKF.py                     # Prediction, correction, publishing
-│   ├── config/
-│   │   └── config.yaml                  # Initial state, Q, N, gravity
-│   ├── package.xml
-│   └── setup.py
-│
-└── image_augment_ros/                   # Experimental-degradation node
-    ├── image_augment_ros/
-    │   └── image_augment_node.py        # splotches | flicker | distortion
-    ├── package.xml
-    └── setup.py
-```
-
-## Authors
-
-University of Michigan, ROB 530 Mobile Robotics — Winter 2026.
-
-- **Austen Goddu** — ajgoddu@umich.edu
-- **Zachary Charlick** — zsc@umich.edu
-- **Thomas Joseph** — trjosep@umich.edu
-- **Matthew Pacas-McCarthy** — mpacas@umich.edu
+source install/setup.bash
+ros2 run rqt_image_view rqt_image_view
+# topic: /camera/camera/color/image_augmented

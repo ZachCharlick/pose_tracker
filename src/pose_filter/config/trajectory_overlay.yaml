@@ -1,0 +1,13 @@
+trajectory_overlay_node:
+  ros__parameters:
+    ekf_topic: /handPose
+    mocap_topic: /mocap_tracking
+    wrist_segment_name: wrist_strap
+    camera_segment_name: camera_530_proj
+
+    # TF frame names this node will broadcast.
+    ekf_parent_frame: camera_color_optical_frame
+    ekf_child_frame: wrist_strap_ekf
+    mocap_parent_frame: map
+    wrist_truth_frame: wrist_strap_truth
+    camera_truth_frame: camera_link
